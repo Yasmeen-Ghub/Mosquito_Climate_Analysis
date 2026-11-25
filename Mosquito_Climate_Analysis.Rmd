@@ -1,0 +1,503 @@
+---
+title: "Mosquito_Climate Analysis"
+author: "Yasmeen A."
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,        #print r code
+                      warning = FALSE,
+                      message = FALSE
+  ) 
+```
+
+## R Markdown
+
+```{r}
+# Required libraries
+library(readxl)
+library(dplyr)
+library(glmmTMB)
+library(DHARMa)
+library(brms)
+library(car)
+library(bayesplot)
+library(patchwork)
+library(ggplot2)
+library(corrplot)
+```
+
+
+```{r}
+# Import data
+df_long <- read.csv("C:/Users/YASMEEN/Desktop/GITHUB/Mosquito_Climate_Analysis/abundance_data.csv")
+
+# Summarise the Data
+summary(df_long)
+
+```
+
+
+```{r}
+# Exclude NAs
+df_long <- na.omit(df_long)
+```
+
+
+```{r}
+# Exploratory 
+
+# Run a simple linear model
+lm <- lm(mosquito_counts ~ Temp + Humidity + Rain_lag1 + sin_term + cos_term,
+         data = df_long)
+
+summary(lm)
+
+# Check for collinearity among predictors
+vif(lm)
+
+
+# Correlation Plot
+corr <- cor(df_long[, c("Temp", "Humidity", "Rain_lag1", "sin_term", "cos_term")])
+
+corrplot(corr, method = "number")
+
+```
+
+
+```{r}
+# Scale the Numeric predictors
+df_long <- df_long %>%
+  mutate(across(c(Temp, Humidity, Rain_lag1), 
+                ~ as.vector(scale(.))))
+```
+
+
+```{r}
+# Nested Models
+model_1 <- glmmTMB(mosquito_counts ~ Location,
+                 data = df_long, 
+                 family = nbinom2)
+
+model_2 <- glmmTMB(mosquito_counts ~ Temp + Location,
+                 data = df_long, 
+                 family = nbinom2)
+
+model_3 <- glmmTMB(mosquito_counts ~ Temp + Humidity + Location,
+                 data = df_long, 
+                 family = nbinom2)
+
+model_4 <- glmmTMB(mosquito_counts ~ Temp + Humidity + Rain_lag1 + Location,
+                 data = df_long, 
+                 family = nbinom2)
+
+model_5 <- glmmTMB(mosquito_counts ~ Temp + Humidity + Rain_lag1 + sin_term 
+                + cos_term + Location,
+                data = df_long, 
+                family = nbinom2)
+```
+
+```{r}
+# Model results
+summary(model_1)
+summary(model_2)
+summary(model_3)
+summary(model_4)
+summary(model_5)
+```
+
+```{r}
+# Final Model (5) check
+simulationOutput <- simulateResiduals(fittedModel = model_5)
+plot(simulationOutput)
+```
+
+```{r}
+
+# Bayesian Model 
+bayesian <- brm(
+  formula = mosquito_counts ~ Temp + Humidity + Rain_lag1 + sin_term 
+  + cos_term + Location,
+  data = df_long,
+  family = negbinomial(),
+  prior = c(
+    prior(normal(0, 2), class = "b"),
+    prior(normal(0, 5), class = "Intercept")
+  ),
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  backend = "cmdstanr",
+  control = list(adapt_delta = 0.97)
+)
+
+summary(bayesian)
+
+
+# Model check
+# Extract posterior draws
+posterior_all <- as.array(bayesian)
+
+# Trace plots 
+p0 <- mcmc_trace(posterior_all, 
+                 pars = c("b_Intercept","b_Temp","b_Humidity",
+                          "b_Rain_lag1","b_sin_term","b_cos_term",
+                          "b_LocationIlobu", "b_LocationOwode"),
+                 facet_args = list(ncol = 2)) +
+  theme_classic() + ggtitle("A  Trace plots")
+
+# Density Plots
+p1 <- mcmc_dens(posterior_all, 
+                 pars = c("b_Intercept","b_Temp","b_Humidity",
+                          "b_Rain_lag1","b_sin_term","b_cos_term",
+                          "b_LocationIlobu", "b_LocationOwode"),
+                 facet_args = list(ncol = 2)) +
+  theme_classic() + ggtitle("B  Density plots")
+
+# Autocorrelation plot (should drop to near zero quickly)
+p2 <- mcmc_acf(posterior_all,
+               pars = c("b_Intercept","b_Temp","b_Humidity",
+                        "b_Rain_lag1","b_sin_term","b_cos_term",
+                        "b_LocationIlobu", "b_LocationOwode"),
+               lags = 15) + ggtitle("c  Autocorrelation")
+
+
+# Combine
+(p0 | (p1/ p2)) +
+  plot_annotation(
+    title = "MCMC Convergence Diagnostics — Bayesian Model for all Species Counts",
+    theme = theme(plot.title = element_text(face = "bold", size = 13))
+  )
+
+
+
+# Temporal Fit plot
+################################################################
+
+# Get posterior fitted values (on response scale)
+fitted_vals <- fitted(bayesian, 
+                      summary = TRUE,   # returns mean + CIs
+                      probs = c(0.025, 0.975))
+
+# Bind to the original data
+plot_df <- df_long %>%
+  mutate(
+    fitted_mean = fitted_vals[, "Estimate"],
+    lower_95    = fitted_vals[, "Q2.5"],
+    upper_95    = fitted_vals[, "Q97.5"]
+  )
+
+head(plot_df)
+
+
+# Make the Plot
+p <- ggplot(plot_df, aes(x = Time)) +   
+  
+  # 95% CI Ribbon — fill mapped to string for legend
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95, fill = "95% CI"), 
+              alpha = 0.5) +
+  
+  # Fitted line — color mapped to string for legend
+  geom_line(aes(y = fitted_mean, color = "Fitted", group = 1), 
+            linetype = "dashed", linewidth = 0.8) +
+  
+  # Observed line — color mapped to string for legend
+  geom_line(aes(y = mosquito_counts, color = "Observed", group = 1), 
+            linewidth = 0.8) +
+  
+  # Create 3 columns for location-specific plots
+  facet_wrap(~ Location, ncol = 3, labeller = label_both) +
+  
+  # Label the Axis
+  labs(x = "Monthly", y = "Abundance") +
+  
+  # Add legend for the lines
+  scale_color_manual(
+    name = NULL,
+    values = c("Observed" = "black", "Fitted" = "red"),
+    guide = guide_legend(override.aes = list(linetype = c("dashed", "solid"),
+                                             linewidth = c(0.8, 0.8)))
+  ) +
+  
+  # Add 95% CI ribbon legend
+  scale_fill_manual(
+    name = NULL,
+    values = c("95% CI" = "grey70"),
+    guide = guide_legend(override.aes = list(alpha = 0.5))
+  ) +
+  
+  
+# Set theme
+  theme_classic() +
+  
+  # SEt legend Position
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    legend.position = c(0.85, 0.85)
+      )
+p
+```
+
+# SPECIES SPECIFIC ANALYSIS
+
+```{r}
+data <- read_excel("C:/Users/YASMEEN/Desktop/GITHUB/Mosquito_Climate_Analysis/abundance data.xlsx")
+View(data)
+
+# Filter the needed column
+data <- data %>% select(c(Time, Year, Month, Temp, Humidity, Rain_lag1, 
+                          sin_term, cos_term, Cx_quequfasciatus, An_gambiae))
+
+# Remove NAs
+data <- na.omit(data)
+
+# Scale the Numeric predictors
+data <- data %>%
+  mutate(across(c(Temp, Humidity, Rain_lag1), 
+                ~ as.vector(scale(.))))
+```
+
+
+
+```{r}
+# Cx_quequfasciatus Model
+cx_bayes <- brm(
+  formula = Cx_quequfasciatus ~ Temp + Humidity + Rain_lag1 + sin_term 
+  + cos_term,
+  data = data,
+  family = negbinomial(),
+  prior = c(
+    prior(normal(0, 2), class = "b"),
+    prior(normal(0, 5), class = "Intercept"),
+    prior(gamma(2, 0.1), class = "shape")   
+  ),
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  backend = "cmdstanr",
+  control = list(adapt_delta = 0.97)
+)
+
+summary(cx_bayes)
+
+
+# Model check
+# Extract posterior draws
+posterior_cx <- as.array(cx_bayes)
+
+# Trace plots 
+p0_cx <- mcmc_trace(posterior_cx, 
+                 pars = c("b_Intercept","b_Temp","b_Humidity",
+                          "b_Rain_lag1","b_sin_term","b_cos_term"),
+                 facet_args = list(ncol = 2)) +
+  theme_classic() + ggtitle("A  Trace plots")
+
+# Density Plots
+p1_cx <- mcmc_dens(posterior_cx, 
+                pars = c("b_Intercept","b_Temp","b_Humidity",
+                         "b_Rain_lag1","b_sin_term","b_cos_term"),
+                facet_args = list(ncol = 2)) +
+  theme_classic() + ggtitle("B  Density plots")
+
+# Autocorrelation plot (should drop to near zero quickly)
+p2_cx <- mcmc_acf(posterior_cx,
+               pars = c("b_Intercept","b_Temp","b_Humidity",
+                        "b_Rain_lag1","b_sin_term","b_cos_term"),
+               lags = 15) + ggtitle("c  Autocorrelation")
+
+p0_cx
+p1_cx
+p2_cx
+
+# Combine
+(p0_cx | (p1_cx/ p2_cx)) +
+  plot_annotation(
+    title = "MCMC Convergence Diagnostics — Cx_quequfasciatus Bayesian Model",
+    theme = theme(plot.title = element_text(face = "bold", size = 13))
+  )
+
+# Temporal Fit plot
+cx_fitted <- fitted(cx_bayes, summary = TRUE, probs = c(0.025, 0.975))
+
+cx_plot_df <- data %>%   # your species-level dataframe
+  mutate(
+    fitted_mean = cx_fitted[, "Estimate"],
+    lower_95    = cx_fitted[, "Q2.5"],
+    upper_95    = cx_fitted[, "Q97.5"]
+  )
+
+
+# Make plot
+
+cx_plot <- ggplot(cx_plot_df, aes(x = Time)) +   
+  
+  # 95% CI Ribbon — fill mapped to string for legend
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95, fill = "95% CI"), 
+              alpha = 0.5) +
+  
+  # Fitted line — color mapped to string for legend
+  geom_line(aes(y = fitted_mean, color = "Fitted", group = 1), 
+            linetype = "dashed", linewidth = 0.8) +
+  
+  # Observed line — color mapped to string for legend
+  geom_line(aes(y = Cx_quequfasciatus, color = "Observed", group = 1), 
+            linewidth = 0.8) +
+  
+    # Label the Axis
+  labs(x = "Monthly", y = "Abundance") +
+  
+  # Add legend for the lines
+  scale_color_manual(
+    name = NULL,
+    values = c("Observed" = "black", "Fitted" = "red"),
+    guide = guide_legend(override.aes = list(linetype = c("dashed", "solid"),
+                                             linewidth = c(0.8, 0.8)))
+  ) +
+  
+  # Add 95% CI ribbon legend
+  scale_fill_manual(
+    name = NULL,
+    values = c("95% CI" = "grey70"),
+    guide = guide_legend(override.aes = list(alpha = 0.5))
+  ) +
+  
+  # Set theme
+  theme_classic() +
+  
+  # SEt legend Position
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    legend.position = c(0.85, 0.85)
+  )+
+  
+  ggtitle("A")
+
+cx_plot
+```
+
+
+```{r}
+# Anopheles Model
+gam_bayes <- brm(
+  formula = An_gambiae ~ Temp + Humidity + Rain_lag1 + sin_term 
+  + cos_term,
+  data = data,
+  family = negbinomial(),
+  prior = c(
+    prior(normal(0, 2), class = "b"),
+    prior(gamma(2, 0.1), class = shape),
+    prior(normal(0, 5), class = "Intercept")
+  ),
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  backend = "cmdstanr",
+  control = list(adapt_delta = 0.95),
+  sample_prior = "yes"      # lets you compare prior and posterior
+)
+
+summary(gam_bayes)
+
+# Model check
+# Extract posterior draws
+posterior_an <- as.array(gam_bayes)
+
+# Trace plots 
+p0_an <- mcmc_trace(posterior_an, 
+                    pars = c("b_Intercept","b_Temp","b_Humidity",
+                             "b_Rain_lag1","b_sin_term","b_cos_term"),
+                    facet_args = list(ncol = 2)) +
+  theme_classic() + ggtitle("A  Trace plots")
+
+# Density Plots
+p1_an <- mcmc_dens(posterior_an, 
+                   pars = c("b_Intercept","b_Temp","b_Humidity",
+                            "b_Rain_lag1","b_sin_term","b_cos_term"),
+                   facet_args = list(ncol = 2)) +
+  theme_classic() + ggtitle("B  Density plots")
+
+# Autocorrelation plot (should drop to near zero quickly)
+p2_an <- mcmc_acf(posterior_an,
+                  pars = c("b_Intercept","b_Temp","b_Humidity",
+                           "b_Rain_lag1","b_sin_term","b_cos_term"),
+                  lags = 15) + ggtitle("c  Autocorrelation")
+
+p0_an
+p1_an
+p2_an
+
+# Combine
+(p0_an | (p1_an/ p2_an)) +
+  plot_annotation(
+    title = "MCMC Convergence Diagnostics — An. gambiae s.l Bayesian Model",
+    theme = theme(plot.title = element_text(face = "bold", size = 13))
+  )
+
+
+ # Temporal Fit plot
+# Prepare dataframe
+gam_fitted <- fitted(gam_bayes, summary = TRUE, probs = c(0.025, 0.975))
+
+gam_plot_df <- data %>%   # species-level dataframe
+  mutate(
+    fitted_mean = cx_fitted[, "Estimate"],
+    lower_95    = cx_fitted[, "Q2.5"],
+    upper_95    = cx_fitted[, "Q97.5"]
+  )
+
+# Make plot
+
+gam_plot <- ggplot(gam_plot_df, aes(x = Time)) +   
+  
+  # 95% CI Ribbon — fill mapped to string for legend
+  geom_ribbon(aes(ymin = lower_95, ymax = upper_95, fill = "95% CI"), 
+              alpha = 0.5) +
+  
+  # Fitted line — color mapped to string for legend
+  geom_line(aes(y = fitted_mean, color = "Fitted", group = 1), 
+            linetype = "dashed", linewidth = 0.8) +
+  
+  # Observed line — color mapped to string for legend
+  geom_line(aes(y = An_gambiae, color = "Observed", group = 1), 
+            linewidth = 0.8) +
+  
+  # Label the Axis
+  labs(x = "Monthly", y = "Abundance") +
+  
+  # Add legend for the lines
+  scale_color_manual(
+    name = NULL,
+    values = c("Observed" = "black", "Fitted" = "red"),
+    guide = guide_legend(override.aes = list(linetype = c("dashed", "solid"),
+                                             linewidth = c(0.8, 0.8)))
+  ) +
+  
+  # Add 95% CI ribbon legend
+  scale_fill_manual(
+    name = NULL,
+    values = c("95% CI" = "grey70"),
+    guide = guide_legend(override.aes = list(alpha = 0.5))
+  ) +
+  
+  # Set theme
+  theme_classic() +
+  
+  # Set legend Position
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+    legend.position = c(0.85, 0.85)
+  ) +
+  ggtitle("B")
+
+gam_plot
+
+```
+
+
