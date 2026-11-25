@@ -31,7 +31,7 @@ library(corrplot)
 
 ```{r}
 # Import data
-df_long <- read.csv("C:/Users/YASMEEN/Desktop/GITHUB/Mosquito_Climate_Analysis/abundance_data.csv")
+df_long <- read.csv("C:/Users/YASMEEN/Desktop/GITHUB/Mosquito_Climate_Analysis/mosquito_abundance_data.csv")
 
 # Summarise the Data
 summary(df_long)
@@ -244,7 +244,7 @@ p
 # SPECIES SPECIFIC ANALYSIS
 
 ```{r}
-data <- read_excel("C:/Users/YASMEEN/Desktop/GITHUB/Mosquito_Climate_Analysis/abundance data.xlsx")
+data <- read_excel("C:/Users/YASMEEN/Desktop/GITHUB/Mosquito_Climate_Analysis/Specie_specific_abundance_data.xlsx")
 View(data)
 
 # Filter the needed column
