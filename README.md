@@ -1,8 +1,8 @@
 # Mosquito Climate Analysis
 
-This repository contains the data and R code used for analysing the relationship between climatic factors and mosquito abundance.
+This repository contains the dataset and R Markdown code used in the manuscript examining the relationship between climatic factors and mosquito abundance in Osun State, Nigeria.
 
-Files
+Contents:
 
 - abundance_data.csv : Mosquito abundance analysis dataset
 - abundance data.xlsx : Specie specific analysis dataset
@@ -12,14 +12,3 @@ Software
 
 - R
 
-libraries
-- glmmTMB
-- DHARMa
-- readxl
-- dplyr
-- brms
-- car
-- bayesplot
-- ggplot2
-- corrplot
-- patchwork
